@@ -1,0 +1,43 @@
+<!-- templates/login.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>B21 Chat • Login</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+  <div class="w-full max-w-sm bg-white shadow rounded-xl p-6">
+    <div class="text-center mb-6">
+      <h1 class="text-2xl font-bold text-blue-600">B21 Chat Login</h1>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="space-y-2 mb-4">
+          {% for category, msg in messages %}
+            <div class="text-sm p-2 rounded {{ 'bg-red-50 text-red-700' if category=='error' else 'bg-green-50 text-green-700' }}">
+              {{ msg }}
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    <form method="POST" class="space-y-3">
+      <div>
+        <label class="block text-sm text-gray-700 mb-1">Username</label>
+        <input name="username" class="w-full border rounded-lg p-2" required />
+      </div>
+      <div>
+        <label class="block text-sm text-gray-700 mb-1">Password</label>
+        <input name="password" type="password" class="w-full border rounded-lg p-2" required />
+      </div>
+      <button class="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2 font-medium">
+        Login / Register
+      </button>
+    </form>
+  </div>
+</body>
+</html>

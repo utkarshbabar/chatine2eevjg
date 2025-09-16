@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>B21 Chat</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+
+  <style>
+    #messages { height: calc(100vh - 190px); overflow-y: auto; }
+    .chat-bubble { max-width: 75%; padding: 10px 14px; border-radius: 18px; margin-bottom: 8px; word-break: break-word; position: relative; }
+    .own { background: #3b82f6; color: white; margin-left: auto; border-bottom-right-radius: 6px; }
+    .other { background: #374151; color: #f9fafb; margin-right: auto; border-bottom-left-radius: 6px; }
+    .system { background: #e6f3ff; color: #083344; margin: 0 auto; border-radius: 8px; padding: 8px 12px; font-size: 0.9rem; white-space: pre-wrap; }
+    .delete-btn { position: absolute; top: 4px; right: 6px; cursor: pointer; font-size: 12px; opacity: 0.6; }
+    .delete-btn:hover { opacity: 1; }
+  </style>
+</head>
+<body class="bg-gray-100 dark:bg-[#202225] text-gray-900 dark:text-white">
+  <div class="flex h-screen">
+
+    <!-- Sidebar -->
+    <aside id="sidebar" class="w-64 bg-white dark:bg-[#2f3136] border-r dark:border-gray-700 flex flex-col">
+      <div class="p-4 flex items-center gap-3 border-b dark:border-gray-700">
+        <h1 class="font-bold text-blue-600 dark:text-blue-400">B21 Chat</h1>
+        <p class="text-sm text-gray-500 dark:text-gray-300">Hi, {{ username }}</p>
+      </div>
+      <div class="flex-1 overflow-y-auto">
+        <h2 class="px-4 pt-3 text-xs font-semibold uppercase text-gray-500 dark:text-gray-400">Online</h2>
+        <ul id="online-users" class="mt-2 space-y-1 px-2"></ul>
+      </div>
+      <div class="p-3 border-t dark:border-gray-700 flex items-center justify-between">
+        <div class="text-xs text-gray-500">E2EE DEMO</div>
+        <a href="{{ url_for('logout') }}" class="text-red-500 text-xs">Logout</a>
+      </div>
+    </aside>
+
+    <!-- Main Chat -->
+    <main class="flex-1 flex flex-col">
+      <div class="px-4 py-3 flex items-center gap-3 bg-white dark:bg-[#36393f] border-b dark:border-gray-700 shadow-sm">
+        <div class="flex-1">
+          <div class="text-lg font-semibold" id="active-title">Group Chat</div>
+          <div class="text-xs text-gray-500 dark:text-gray-400" id="active-sub">Public group</div>
+        </div>
+        <div class="flex gap-2">
+          <button id="compute-secret" class="px-3 py-1 text-sm bg-indigo-600 hover:bg-indigo-700 rounded text-white">Show Key Info</button>
+        </div>
+      </div>
+
+      <!-- Messages -->
+      <div id="messages" class="flex-1 p-4 bg-gray-50 dark:bg-[#2f3136]"></div>
+
+      <!-- Input -->
+      <form id="message-form" class="p-3 bg-white dark:bg-[#40444b] border-t dark:border-gray-700 flex items-center gap-2">
+        <textarea id="message" rows="1" placeholder="Message..."
+          class="flex-1 p-2 rounded-lg bg-gray-100 dark:bg-[#303339] resize-none overflow-hidden focus:outline-none focus:ring focus:ring-blue-400" required></textarea>
+        <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">Send</button>
+      </form>
+    </main>
+  </div>
+
+  <script>
+    const socket = io({ auth: { username: "{{ username }}" } });
+    const myUsername = "{{ username }}";
+    const messagesDiv = document.getElementById('messages');
+    const messageForm = document.getElementById('message-form');
+    const messageInput = document.getElementById('message');
+    const onlineUsers = document.getElementById('online-users');
+    const activeTitle = document.getElementById('active-title');
+    const activeSub = document.getElementById('active-sub');
+    const computeBtn = document.getElementById('compute-secret');
+
+    let activeChat = ""; // "" = group
+    let sharedKey = null;
+
+    // --- AES Utils ---
+    async function deriveKey(secret) {
+      const secretBytes = new TextEncoder().encode(secret.toString());
+      return await crypto.subtle.importKey("raw", await crypto.subtle.digest("SHA-256", secretBytes), "AES-GCM", false, ["encrypt", "decrypt"]);
+    }
+
+    async function encryptMessage(plainText) {
+      if (!sharedKey) return plainText;
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const encoded = new TextEncoder().encode(plainText);
+      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, sharedKey, encoded);
+      return btoa(JSON.stringify({iv: Array.from(iv), ct: Array.from(new Uint8Array(ciphertext))}));
+    }
+
+    async function decryptMessage(data) {
+      if (!sharedKey) return data;
+      try {
+        const obj = JSON.parse(atob(data));
+        const iv = new Uint8Array(obj.iv);
+        const ct = new Uint8Array(obj.ct);
+        const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, sharedKey, ct);
+        return new TextDecoder().decode(decrypted);
+      } catch (e) {
+        return "[Decryption failed]";
+      }
+    }
+
+    // --- Append Message ---
+    function appendMessage(obj) {
+      if (obj.type === 'system') {
+        const el = document.createElement('div');
+        el.className = 'system';
+        el.textContent = obj.message;
+        messagesDiv.appendChild(el);
+      } else {
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-bubble ' + (obj.sender === myUsername ? 'own' : 'other');
+        bubble.dataset.msgid = obj.id || "";
+
+        const header = `<div class="text-sm font-medium opacity-80">${obj.sender}</div>`;
+        const body = `<div>${obj.message}</div>`;
+        const ts = `<div class="text-xs opacity-60 mt-2">${obj.timestamp || ''}</div>`;
+        bubble.innerHTML = header + body + ts;
+
+        if (obj.sender === myUsername && obj.id) {
+          const delBtn = document.createElement('span');
+          delBtn.className = 'delete-btn';
+          delBtn.textContent = "🗑";
+          delBtn.onclick = async () => {
+            const res = await fetch(`/delete_message/${obj.id}`, { method: 'POST' });
+            const json = await res.json();
+            if (json.status === "deleted") {
+              bubble.remove();
+              socket.emit("message_deleted", { id: obj.id, recipient: obj.recipient });
+            }
+          };
+          bubble.appendChild(delBtn);
+        }
+        messagesDiv.appendChild(bubble);
+      }
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    // --- Load history ---
+    async function loadHistoryFor(target) {
+      messagesDiv.innerHTML = "";
+      const url = target ? `/history/${target}` : '/history/group';
+      const res = await fetch(url);
+      const msgs = await res.json();
+      for (const m of msgs) {
+        const text = await decryptMessage(m.message);
+        appendMessage({...m, message: text});
+      }
+      activeTitle.textContent = target ? `Chat with ${target}` : "Group Chat";
+      activeSub.textContent = target ? "Private chat" : "Public group";
+    }
+
+    // --- Send message ---
+    messageForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const text = messageInput.value.trim();
+      if (!text) return;
+      const ciphertext = await encryptMessage(text);
+      socket.emit('send_message', { recipient: activeChat, message: ciphertext });
+      messageInput.value = '';
+    });
+
+    // --- Receive message ---
+    socket.on('new_message', async (data) => {
+      if (!data.message) return;
+      const showInView = (!data.recipient && activeChat === "") ||
+                         (data.recipient && (activeChat === data.sender || activeChat === data.recipient));
+      if (showInView) {
+        const plain = await decryptMessage(data.message);
+        appendMessage({...data, message: plain});
+      }
+    });
+
+    // --- Handle deletion events ---
+    socket.on("message_deleted", (data) => {
+      const bubble = document.querySelector(`[data-msgid='${data.id}']`);
+      if (bubble) bubble.remove();
+    });
+
+    // --- Online users ---
+    socket.on('user_status', (data) => {
+      onlineUsers.innerHTML = '';
+      data.users.forEach(u => {
+        if (u === myUsername) return;
+        const li = document.createElement('li');
+        li.className = 'flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded';
+        li.innerHTML = `<div class="w-8 h-8 rounded-full bg-green-500 text-white flex items-center justify-center">${u[0]}</div><span>${u}</span>`;
+        li.onclick = async () => {
+          activeChat = u;
+          await loadHistoryFor(u);
+          const res = await fetch(`/keys/${u}`);
+          const json = await res.json();
+          const p = BigInt(json.params.p);
+          const myPriv = BigInt(json.me.private_key);
+          const otherPub = BigInt(json.other.public_key);
+          const secret = otherPub ** myPriv % p;
+          sharedKey = await deriveKey(secret);
+          appendMessage({type: 'system', message: `Shared secret computed.`});
+        };
+        onlineUsers.appendChild(li);
+      });
+    });
+
+    // --- On connect ---
+    socket.on('connect', () => { loadHistoryFor(""); });
+  </script>
+</body>
+</html>
