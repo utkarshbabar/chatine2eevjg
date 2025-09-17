@@ -12,7 +12,8 @@ import random
 app = Flask(__name__, template_folder="templates")
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "supersecretkey")
 
-socketio = SocketIO(app, async_mode="threading", cors_allowed_origins="*")
+# Use eventlet for production-safe async
+socketio = SocketIO(app, async_mode="eventlet", cors_allowed_origins="*")
 lock = Lock()
 clients = {}  # username -> True (online map)
 
@@ -236,6 +237,7 @@ def delete_message(msg_id):
         return jsonify({"error": "Not logged in"}), 403
     me = session["username"]
     delete_message_by_id(msg_id, me)
+    socketio.emit("message_deleted", {"id": msg_id})
     return jsonify({"status": "deleted"})
 
 @app.route("/delete_group", methods=["POST"])
@@ -243,6 +245,7 @@ def delete_group():
     if "username" not in session:
         return jsonify({"error": "Not logged in"}), 403
     delete_group_messages()
+    socketio.emit("group_cleared")
     return jsonify({"status": "deleted"})
 
 @app.route("/debug")
@@ -269,7 +272,6 @@ def handle_connect(auth=None):
         with lock:
             clients[uname] = True
         socketio.emit("user_status", {"users": list(clients.keys())})
-        print(f"[CONNECT] {uname} connected.")
 
 @socketio.on("disconnect")
 def handle_disconnect():
@@ -278,7 +280,6 @@ def handle_disconnect():
         with lock:
             clients.pop(uname, None)
         socketio.emit("user_status", {"users": list(clients.keys())})
-        print(f"[DISCONNECT] {uname} disconnected.")
 
 @socketio.on("send_message")
 def handle_send_message(data):
@@ -308,3 +309,4 @@ if __name__ == "__main__":
     init_db()
     port = int(os.environ.get("PORT", 5555))  # Render provides PORT
     socketio.run(app, host="0.0.0.0", port=port)
+
